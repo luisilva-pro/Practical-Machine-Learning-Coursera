@@ -1,0 +1,128 @@
+---
+title: "Practical Machine Learning"
+author: "Luís Silva"
+date: "4/26/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+The goal of this project is to predict the manner in which six participants did the exercise, using data from accelerometers on the belt, forearm, arm, and dumbbell. They performed barbell lifts correctly and incorrectly in 5 different ways [1] quantified by the variable "classes". Participants performed ten repetitions of Unilateral exactly according to the specification times the following conditions:
+
+Class A: exactly according to the specification.
+Class B: throwing the elbows to the front.
+Class C: lifting the dumbbell only halfway.
+Class D: lowering the dumbbell only halfway.
+Class E: throwing the hips to the front.
+
+Class A corresponds to the correct execution of the exercise, while the other four classes represent common mistakes during training.
+
+More information can be found in the following link:
+
+http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har
+
+# Import Data
+
+```{r}
+library(readr)
+training <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv")
+testing <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv")
+table(training$classe)
+```
+
+# Preprocessing
+
+Two main tasks are performed in this part. The first corresponds to the cleaning of the matrix, removing missing values and irrelevant information, and performing normalization of the values. In the second task is performed features selection accordingly a random forest model and Mean Decrease in Gini technique. The best feature was decided considering the higher values than the mean of all Gini scores.
+
+## Exclude Features with Missing Values and Standardizing
+
+```{r}
+suppressMessages(library(caret))
+
+# Exclude features with missing values #
+training <- training[ , apply(training, 2, function(x) (!any(is.na(x) | x == "")))]
+training <- training[,-c(1:7)]
+dim(training)
+
+# Center and Standardizing #
+normaliz <- preProcess(training, method=c("center", "scale"))
+training <- predict(normaliz, training)
+```
+
+## Features Selection
+
+```{r}
+suppressMessages(library(randomForest))
+suppressMessages(library(ggplot2))
+
+training$classe <- as.factor(training$classe)
+rfModel <-randomForest(classe ~ ., data = training, importance = TRUE)
+feat_imp <- varImp(rfModel, scale=FALSE)
+ImpPlot <- varImpPlot(rfModel)
+gini <- as.data.frame(cbind(names(training[,-53]),ImpPlot[,2]))
+gini$V2 <- as.numeric(gini$V2)
+thr <- mean(gini[,2])
+data_feat <- subset(gini, gini[,2] > thr)
+rank <- data_feat[order(data_feat$V2),]
+rank$V1 <- factor(rank$V1, levels = rank$V1[order(rank$V2)])
+ggplot(rank, aes(x = V2, y = V1)) + theme_bw() + geom_bar(stat = "identity") + 
+  xlab("Mean Decrease in GINI") + ylab("Features") +
+  theme(axis.title.x = element_text(color="blue", size=16, face="bold"),
+axis.title.y = element_text(color="#963333", size=16, face="bold"))
+```
+
+# Recognition Performance
+
+This section is divided into three parts: 1) train and find the best model among classification and regression tree (CART), k-nearest neighbors (kNN), and train models such as random forest (RF); 2) validation of the model with training and validation data; 3) prediction with new data.
+
+## Models Train
+
+```{r}
+suppressMessages(library(dplyr))
+datatrain <- training %>% select(c(data_feat$V1),classe)
+control <- trainControl(method="cv", number=10)
+
+model.cart <- train(classe~., data=datatrain, method="rpart", metric="Accuracy", trControl=control)
+model.knn <- train(classe~., data=datatrain, method="knn", metric="Accuracy", trControl=control)
+model.rf <- train(classe~., data=datatrain, method="rf", metric="Accuracy", trControl=control)
+
+bestmodel <- resamples(list(cart=model.cart, knn=model.knn, rf=model.rf))
+summary(bestmodel)
+dotplot(bestmodel)
+```
+
+The best model was the RF model showing an accuracy of 99.2%. Close to this was the kNN model with 96.1% of accuracy. The worst model was the CART with only 50.3% (like flipping a coin). Thus, RF was used for validation and prediction procedures.
+
+## Validation
+
+```{r}
+inTrain <- createDataPartition(datatrain$classe, p=0.80, list=F)
+trainData <- datatrain[inTrain, ]
+ValidationData <- datatrain[-inTrain, ]
+model.rf2 <- train(classe ~ ., data=trainData, method="rf", trControl=control)
+predict.rf2 <- predict(model.rf2, ValidationData)
+confusionMatrix(ValidationData$classe, predict.rf2)
+```
+
+## Predictions
+
+```{r}
+datatest <- predict(normaliz, testing)
+datatest <- testing %>% select(c(data_feat$V1),problem_id)
+datatest$problem_id <- as.factor(datatest$problem_id)
+
+predict <- predict(model.rf2, datatest[,-19])
+print(predict)
+```
+
+# Conclusions
+
+The best model was the random forest with 99.1% of accuracy. Similar accuracy was found (99.2%) for this model when using the validation set. From the total data, 18 features were used for classification. The most robust two features were the rolling belt and yaw belt. The belt and forearm contain the best information to classify how curl exercise is done.
+
+# References
+
+[1] Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
